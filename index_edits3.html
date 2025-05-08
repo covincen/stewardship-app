@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>H3 Hex Overlaps w/ Popups & Hex Size</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
+  />
+  <style>
+    html, body { margin:0; padding:0; height:100%; }
+    #map { width:100%; height:100%; }
+
+    .selector-control {
+      background: white;
+      padding: 6px 8px;
+      border-radius: 4px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.3);
+      font: 14px/1.3 Arial, sans-serif;
+    }
+    .selector-control label {
+      font-weight: bold;
+      margin-right: 4px;
+    }
+    .selector-control select {
+      margin-bottom: 4px;
+      width: 80px;
+    }
+
+    .filter-box {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: white;
+      padding: 8px;
+      border-radius: 4px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.3);
+      font: 14px/1.3 Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      column-gap: 8px;
+    }
+    .filter-box label { margin-right: 4px; }
+
+    .info.legend {
+      padding: 6px 8px;
+      font: 14px/16px Arial, sans-serif;
+      background: rgba(255,255,255,0.8);
+      box-shadow: 0 0 15px rgba(0,0,0,0.2);
+      border-radius: 5px;
+      text-align: left;
+    }
+    .info.legend i {
+      width: 18px; height: 18px;
+      display: inline-block;
+      margin-right: 8px;
+      opacity: 0.7;
+    }
+    .info.legend h4 { margin:0 0 5px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Bottom query controls -->
+  <div class="filter-box">
+    <label for="opSelect">Hectares</label>
+    <select id="opSelect">
+      <option value=">">&gt;</option>
+      <option value="<">&lt;</option>
+      <option value="=">=</option>
+    </select>
+    <input id="valueInput" type="number" step="any" style="width:60px" placeholder="value"/>
+    <button id="applyBtn">Apply</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script>
+    // 1) Base map
+    const map = L.map("map").setView([49.4, -121.9], 10);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OSM"
+    }).addTo(map);
+
+    // 2) Shared parameters
+    const breaksHa     = [0,750,1500,2250,3000];
+    const legendLabels = ["3000+","2250–2999","1500–2249","750–1499","0–750","0"];
+    const fieldMap     = {
+      Cutblocks: "cutblocks_m2",
+      Parks:     "parks_m2",
+      Wetlands:  "wetlands_m2"
+    };
+    const ramps = {
+      Cutblocks: ["#fff5f0","#fecbba","#fb6a4a","#de2d26","#a50f15","#67000d"],
+      Parks:     ["#f7fbff","#deebf7","#9ecae1","#6baed6","#3182bd","#08519c"],
+      Wetlands:  ["#ffffe5","#f7fcb9","#d9f0a3","#addd8e","#78c679","#238443"]
+    };
+
+    function styleByBreaks(field, rampColors) {
+      return feat => {
+        const v = feat.properties[field] / 10000;
+        let c = rampColors[0];
+        if      (v > breaksHa[4]) c = rampColors[5];
+        else if (v > breaksHa[3]) c = rampColors[4];
+        else if (v > breaksHa[2]) c = rampColors[3];
+        else if (v > breaksHa[1]) c = rampColors[2];
+        else if (v > breaksHa[0]) c = rampColors[1];
+        return { fillColor:c, weight:1, color:"#444", fillOpacity:0.7 };
+      };
+    }
+
+    function makeLegend(title, rampColors) {
+      const revCols = rampColors.slice().reverse();
+      const legend  = L.control({ position: "bottomright" });
+      legend.onAdd = () => {
+        const div = L.DomUtil.create("div","info legend");
+        div.innerHTML = `<h4>${title} (ha)</h4>`;
+        legendLabels.forEach((lbl,i)=> {
+          div.innerHTML += `<i style="background:${revCols[i]}"></i>${lbl}<br>`;
+        });
+        return div;
+      };
+      return legend;
+    }
+
+    // 3) Helper that creates a styled geoJSON layer with popups and hexSize
+    function createLayer(hexes, layerName, hexSize) {
+      const field      = fieldMap[layerName];
+      const rampColors = ramps[layerName];
+      return L.geoJSON(hexes, {
+        style: styleByBreaks(field, rampColors),
+        onEachFeature: (feature, layer) => {
+          const ha = (feature.properties[field] / 10000).toFixed(2);
+          layer.bindPopup(
+            `<b>Hex ID:</b> ${feature.properties.h3_index}<br>` +
+            `<b>Hex size:</b> ${hexSize}<br>` +
+            `<b>Type:</b> ${layerName}<br>` +
+            `<b>Overlap:</b> ${ha} ha`
+          );
+        }
+      });
+    }
+
+    // 4) Top-right custom control (Layer + Hex size)
+    const SelectorControl = L.Control.extend({
+      options: { position: "topright" },
+      onAdd: function() {
+        const c = L.DomUtil.create("div","selector-control leaflet-bar");
+        c.innerHTML = `
+          <div>
+            <label for="layerSel">Layer:</label>
+            <select id="layerSel">
+              <option>Cutblocks</option>
+              <option>Parks</option>
+              <option>Wetlands</option>
+            </select>
+          </div>
+          <div>
+            <label for="resSel">Hex size:</label>
+            <select id="resSel">
+              <option value="5">5</option>
+              <option value="6" selected>6</option>
+              <option value="7">7</option>
+            </select>
+          </div>
+        `;
+        L.DomEvent.disableClickPropagation(c);
+        return c;
+      }
+    });
+    map.addControl(new SelectorControl());
+
+    // 5) Load all three resolutions from GeoJSON
+    Promise.all([
+      fetch("h3_hex_res5.geojson").then(r=>r.json()),
+      fetch("h3_hex_res6.geojson").then(r=>r.json()),
+      fetch("h3_hex_res7.geojson").then(r=>r.json())
+    ]).then(([d5,d6,d7])=>{
+      const hexData = {5:d5, 6:d6, 7:d7};
+      let currentLayer = null, currentLegend = null;
+
+      // Draw or redraw the single active layer + legend
+      function drawLayer() {
+        if (currentLayer) map.removeLayer(currentLayer);
+        if (currentLegend) map.removeControl(currentLegend);
+
+        const layerName = document.getElementById("layerSel").value;
+        const res       = +document.getElementById("resSel").value;
+        const hexes     = hexData[res];
+
+        currentLayer  = createLayer(hexes, layerName, res).addTo(map);
+        currentLegend = makeLegend(layerName, ramps[layerName]).addTo(map);
+      }
+
+      // React when user changes either selector
+      document.getElementById("layerSel").onchange = drawLayer;
+      document.getElementById("resSel").onchange   = drawLayer;
+
+      // initial draw
+      drawLayer();
+
+      // 6) Bottom query logic
+      document.getElementById("applyBtn").onclick = ()=>{
+        if (currentLayer) map.removeLayer(currentLayer);
+        if (currentLegend) map.removeControl(currentLegend);
+
+        const layerName = document.getElementById("layerSel").value;
+        const op        = document.getElementById("opSelect").value;
+        const val       = parseFloat(document.getElementById("valueInput").value);
+        const res       = +document.getElementById("resSel").value;
+        const hexes     = hexData[res];
+
+        // filtered layer
+        currentLayer = L.geoJSON(hexes, {
+          filter: feat => {
+            const ha = feat.properties[fieldMap[layerName]]/10000;
+            return op===">" ? ha>val
+                 : op==="<" ? ha<val
+                 :            ha===val;
+          },
+          style: styleByBreaks(fieldMap[layerName], ramps[layerName]),
+          onEachFeature: (feature, layer) => {
+            const ha = (feature.properties[fieldMap[layerName]] / 10000).toFixed(2);
+            layer.bindPopup(
+              `<b>Hex ID:</b> ${feature.properties.h3_index}<br>` +
+              `<b>Hex size:</b> ${res}<br>` +
+              `<b>Type:</b> ${layerName}<br>` +
+              `<b>Overlap:</b> ${ha} ha`
+            );
+          }
+        }).addTo(map);
+
+        currentLegend = makeLegend(layerName, ramps[layerName]).addTo(map);
+      };
+
+      document.getElementById("resetBtn").onclick = ()=> {
+        drawLayer();
+      };
+    });
+  </script>
+</body>
+</html>
